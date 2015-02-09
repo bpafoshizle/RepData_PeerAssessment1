@@ -1,25 +1,163 @@
 ---
 title: "Reproducible Research: Peer Assessment 1"
 output: 
-  html_document:
-    keep_md: true
+html_document:
+keep_md: true
 ---
 
 
 ## Loading and preprocessing the data
-
+First, I'll create a function to handle reading a single csv from a zip file,
+and following that, I'll read the CSV to a dataset called activity, and finally 
+print a summary. 
+```{r readData}
+readZipCSV <- function(zipFilePath, ...){
+   # Function extracts a csv file in a zip file assuming the same name. 
+   # Get the file name without extension
+   fileNameNoExt = gsub(pattern = "(.*)\\..*$", "\\1", basename(zipFilePath))
+   read.csv(unz(zipFilePath, paste(fileNameNoExt, ".csv", sep="")))
+   }
+activity = readZipCSV("./activity.zip", row.names=null)
+summary(activity)
+```
 
 
 ## What is mean total number of steps taken per day?
+To get the mean total number of steps per day, first I need to aggregate up my 
+data set from the day+interval grain to the day grain, summing the steps by
+day. [Granularity][1] of data is a term and concept from dimensional modeling. 
+[Hadley Wickham][2] is an R boss, no two ways about it. He created a favorite R 
+package of mine, called [dplyr][3]. dplyr provides a grammar of data manipulation, 
+similar to the way the [ggplot2][4] package (also created by Hadley Wickham) 
+provides a grammar of graphics. The key to using dplyr is the chaining operator 
+denoted as '%>%', which allows one to write very complex, yet still readable 
+chains of data operations. I'll use it here to summarize my data to the day 
+grain and then take the mean by day.
 
+[1]:http://www.kimballgroup.com/2003/03/declaring-the-grain/ "Granularity"
+[2]:http://had.co.nz "Hadley Wickham"
+[3]:http://cran.rstudio.com/web/packages/dplyr/vignettes/introduction.html "dplyr"
+[4]:http://ggplot2.org "ggplot2"
+
+```{r takeAvgByDay}
+suppressMessages(library(dplyr))
+activityByDay <- activity %>%
+                     group_by(date) %>%
+                     summarize(
+                        sumSteps=sum(steps)
+                     ) %>%
+                     select(date, sumSteps)
+
+activityByDay
+```
+Now that I've got a data table at the day grain, I can show a couple of 
+hisorgrams from different plotting systems of the new sumSteps column/variable.  
+```{r histograms, fig.height=4, fig.width=4}
+suppressMessages(library(ggplot2))
+qplot(sumSteps, data=activityByDay, binwidth=2500)
+hist(activityByDay$sumSteps)
+```
+  
+Finally, I'll take a look at the mean an median of the summarized-by-day 
+dataset.
+```{r summary}
+activityByDay %>%
+   summarize(meanOfDays=mean(sumSteps, na.rm=TRUE),
+             medianOfDays=median(sumSteps, na.rm=TRUE))
+```
 
 
 ## What is the average daily activity pattern?
+For the next step, I need the data at the interval grain, with the measurement 
+summarized via an average by time interval across all days for the same time
+interval. I will use the amazing dplyr again. Once I summarize the data to the 
+desired grain, I'll plot a time series line graph of the data, and we can get a
+sense of the which time intervals are on average the most active.
+```{r intervalTimeSeries, fig.width=16}
+activityByInterval <- activity %>%
+                        group_by(interval) %>%
+                        summarize(meanSteps=mean(steps, na.rm=TRUE))
 
+ggplot(activityByInterval, aes(interval, meanSteps)) +
+   geom_line() + ylab("Avg Steps") +
+   scale_x_continuous(breaks=seq(min(activityByInterval$interval), 
+                                 max(activityByInterval$interval), 
+                                 by=100
+                              )
+                      )
+```
+From the above figure, you can see that by far the most active time of the day 
+from the given data is between 8am and 9am, right about 8:15am almost.    
+Let's find out for sure which interval has the highest.
 
-
+```{r highestActivityInterval}
+activityByInterval[which(activityByInterval$meanSteps ==
+                            max(activityByInterval$meanSteps)
+                         ),
+                   c("interval")]
+```
+So, it's actually around 8:35am. Sorting the data by descending meanSteps, 
+we can see the same thing.
+```{r sortIntervalMeanDesc}
+activityByInterval %>%
+   arrange(desc(meanSteps))        
+```
 ## Imputing missing values
-
-
-
+In this section, we'll handle missing values. First, lets get a sense of the
+scope of the problem.
+```{r countMissing}
+nrow(activity[is.na(activity$steps), ])
+```
+A simple strategy for imputing missing values might be to fill them in with the
+average for the given interval. We can use our average by interval dataset from 
+earlier.
+```{r imputeMissing}
+activityWithMeans <- left_join(activity, activityByInterval, by="interval")
+idxNa = which(is.na(activityWithMeans$steps))
+activityWithMeans[idxNa, ]$steps = round(activityWithMeans[idxNa, ]$meanSteps)
+activityWithMeans <- activityWithMeans[, c("steps", "date", "interval")]
+summary(activityWithMeans)
+```
+Now we can take the mean and median and plot a histogram again.
+```{r histograms2, fig.height=4, fig.width=4}
+activityByDay <- activityWithMeans %>%
+                     group_by(date) %>%
+                     summarize(
+                        sumSteps=sum(steps)
+                     ) %>%
+                     select(date, sumSteps)
+qplot(sumSteps, data=activityByDay, binwidth=2500)
+hist(activityByDay$sumSteps)
+activityByDay %>%
+   summarize(meanOfDays=mean(sumSteps, na.rm=TRUE),
+             medianOfDays=median(sumSteps, na.rm=TRUE))
+```
+It looks like the imputation of the data did not really affect the mean or 
+median very much, and it did not affect the shape of the histogram. It did 
+increase the total count of days that make up the "center" mean portion of the 
+histogram. 
 ## Are there differences in activity patterns between weekdays and weekends?
+Now, I'll do some analysis on the differences between weekends and weekdays.
+```{r weekendVsWeekday, fig.width=16}
+activity$weekendInd = factor(
+                        gsub("Monday|Tuesday|Wednesday|Thursday|Friday", "Weekday", 
+                           gsub("Sunday|Saturday", "Weekend", weekdays(as.Date(activity$date)))
+                        )
+                     )
+
+activityByInterval <- activity %>%
+                        group_by(weekendInd, interval) %>%
+                        summarize(meanSteps=mean(steps, na.rm=TRUE))
+
+ggplot(activityByInterval, aes(interval, meanSteps)) +
+   geom_line() + ylab("Avg Steps") +
+   scale_x_continuous(breaks=seq(min(activityByInterval$interval), 
+                                 max(activityByInterval$interval), 
+                                 by=100
+                              )
+                      ) +
+   facet_grid(weekendInd ~ .)
+```
+There is a similar spike of steps from 8am-9am on the weekend as there is on 
+weekdays, but it's also clear that weekend steps are higher throughout the rest
+of the day.
